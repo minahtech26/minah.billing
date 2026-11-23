@@ -168,6 +168,9 @@ button { cursor:pointer }
 .data-message{margin:0;padding:22px;color:var(--muted);font-size:12px}
 .data-message.error{color:#a52e2e}
 .sale-message{margin:0 12px;padding:8px 10px;border-radius:6px;font-size:10px}
+.sale-success{margin:0 12px;padding:8px 10px;border-radius:7px;background:#edf6f1;color:#286849;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:10px}
+.sale-success>span{min-width:0;overflow-wrap:anywhere}
+.sale-success .row-action{height:32px;flex:none;display:flex;align-items:center;gap:5px;color:var(--primary);font-size:10px}
 .discount-input{width:75px;height:24px;border:1px solid var(--border);border-radius:5px;text-align:right;padding:0 5px;color:#369164;font-size:10px}
 .modal-backdrop{position:fixed;inset:0;z-index:30;background:rgba(20,35,27,.4);display:grid;place-items:center;padding:16px}
 .product-form{width:min(100%,480px);max-height:90vh;overflow:auto;background:#fff;border-radius:12px;padding:22px;box-shadow:0 15px 48px rgba(0,0,0,.18)}

@@ -260,6 +260,8 @@ function Billing() {
   const [discount, setDiscount] = useState(0)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const [completedSale, setCompletedSale] = useState(null)
+  const [printing, setPrinting] = useState(false)
   const [saleError, setSaleError] = useState('')
   const finishBillRef = useRef(null)
   useEffect(() => subscribeToProducts((items) => {
@@ -329,6 +331,25 @@ function Billing() {
         customerId,
         customerName: selectedCustomer?.name || '',
       })
+      setCompletedSale({
+        invoiceNumber: result.invoiceNumber,
+        items: cart.map((item) => ({
+          name: item.name,
+          quantity: item.qty,
+          unitPrice: item.price,
+          lineTotal: item.price * item.qty,
+        })),
+        customerName: selectedCustomer?.name || '',
+        subtotal,
+        discount,
+        tax,
+        total,
+        paymentMethod: payment,
+        amountReceived: received === '' ? total : Number(received),
+        change: result.change,
+        createdAt: new Date(),
+        status: 'completed',
+      })
       setCart([])
       setReceived('')
       setDiscount(0)
@@ -343,6 +364,26 @@ function Billing() {
     }
   }
   finishBillRef.current = finishBill
+  async function printCompletedInvoice() {
+    if (!completedSale) return
+    const printWindow = window.open('', '_blank')
+    if (!printWindow) {
+      setSaleError('Allow pop-ups for this site to print the invoice.')
+      return
+    }
+    setPrinting(true)
+    setSaleError('')
+    try {
+      const pdf = await createInvoicePdf(completedSale, shopSettings)
+      pdf.autoPrint()
+      printWindow.location.href = pdf.output('bloburl')
+    } catch (error) {
+      printWindow.close()
+      setSaleError(error.message || 'Could not prepare the invoice for printing.')
+    } finally {
+      setPrinting(false)
+    }
+  }
   useEffect(() => {
     function onShortcut(event) {
       if (event.key === 'F2') { event.preventDefault(); searchRef.current?.focus() }
@@ -407,7 +448,7 @@ function Billing() {
           {payment==='Cash'&&<div className="received"><label>Amount Received</label><div><span>₹</span><input type="number" min={total} step="0.01" value={received} onChange={e=>setReceived(e.target.value)} placeholder={String(total)}/></div><p>Balance: <strong>{money(Math.max(Number(received||total)-total,0))}</strong></p></div>}
         </div>
         {saleError && <p className="sale-message error" role="alert">{saleError}</p>}
-        {message && <p className="sale-message success" role="status">{message}</p>}
+        {message && <div className="sale-success" role="status"><span>{message}</span><button type="button" className="row-action" disabled={printing} onClick={printCompletedInvoice}><Printer size={14}/>{printing?'Preparing…':'Print Invoice'}</button></div>}
         <button className="complete" disabled={!cart.length||busy} onClick={finishBill}><Printer size={18}/> {busy?'Saving…':'Complete Bill'} <span>{money(total)}</span></button>
       </aside>
     </div>
@@ -710,6 +751,217 @@ function PurchasesPage() {
   </div>
 }
 
+async function createInvoicePdf(sale, settings = {}, receiptHeight = 0) {
+  const { jsPDF } = await import('jspdf')
+  const paperSize = settings.invoicePaperSize || '80mm'
+  const isA4 = paperSize === 'A4'
+  const width = isA4 ? 210 : paperSize === '58mm' ? 58 : 80
+  const margin = isA4 ? 18 : paperSize === '58mm' ? 3 : 5
+  const items = Array.isArray(sale.items) ? sale.items : []
+  const estimatedHeight = isA4 ? 297 : receiptHeight || Math.max(125, 112 + items.length * 17)
+  const pdf = new jsPDF({ unit: 'mm', format: isA4 ? 'a4' : [width, estimatedHeight] })
+  const right = width - margin
+  const center = width / 2
+  const rule = (y) => {
+    pdf.setDrawColor(205, 214, 208)
+    pdf.setLineWidth(0.25)
+    pdf.line(margin, y, right, y)
+  }
+  const centered = (text, y, maxWidth, fontSize = 9) => {
+    pdf.setFontSize(fontSize)
+    const lines = pdf.splitTextToSize(String(text), maxWidth)
+    pdf.text(lines, center, y, { align: 'center' })
+    return y + lines.length * (fontSize * 0.42)
+  }
+  const date = timestampDate(sale.createdAt)?.toLocaleString('en-IN') || '—'
+  const storeName = String(settings.shopName || 'FreshMart Grocery').trim()
+  const initials = storeName.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'GS'
+  const currency = (value) => `Rs. ${Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+  let y
+
+  if (isA4) {
+    const bannerY = 16
+    const bannerHeight = 38
+    pdf.setFillColor(36, 95, 73)
+    pdf.roundedRect(margin, bannerY, width - margin * 2, bannerHeight, 3, 3, 'F')
+    pdf.setFillColor(232, 243, 237)
+    pdf.circle(margin + 13, bannerY + 19, 8, 'F')
+    pdf.setTextColor(36, 95, 73)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(11)
+    pdf.text(initials, margin + 13, bannerY + 20, { align: 'center' })
+    pdf.setTextColor(255, 255, 255)
+    pdf.setFontSize(18)
+    const nameLines = pdf.splitTextToSize(storeName, 91)
+    pdf.text(nameLines, margin + 27, bannerY + (nameLines.length > 1 ? 15 : 19))
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.text('GROCERY & RETAIL', margin + 27, bannerY + 30)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(9)
+    pdf.text('INVOICE', right - 2, bannerY + 13, { align: 'right' })
+    pdf.setFont('helvetica', 'normal')
+    pdf.setFontSize(8)
+    pdf.text(String(sale.invoiceNumber || ''), right - 2, bannerY + 19, { align: 'right' })
+    y = bannerY + bannerHeight + 7
+    pdf.setTextColor(83, 96, 88)
+    pdf.setFontSize(8)
+    const details = [settings.address, settings.phone, settings.email, settings.gstin ? `GSTIN: ${settings.gstin}` : ''].filter(Boolean)
+    details.forEach((detail) => {
+      const lines = pdf.splitTextToSize(String(detail), width - margin * 2)
+      pdf.text(lines, margin, y)
+      y += lines.length * 4
+    })
+  } else {
+    y = 6
+    pdf.setFillColor(232, 243, 237)
+    pdf.circle(center, y + 5, 5, 'F')
+    pdf.setTextColor(36, 95, 73)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(8)
+    pdf.text(initials, center, y + 6, { align: 'center' })
+    y += 18
+    pdf.setTextColor(30, 52, 40)
+    pdf.setFont('helvetica', 'bold')
+    y = centered(storeName, y, width - margin * 2, paperSize === '58mm' ? 11 : 13)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(83, 96, 88)
+    const details = [settings.address, settings.phone, settings.email, settings.gstin ? `GSTIN: ${settings.gstin}` : ''].filter(Boolean)
+    details.forEach((detail) => { y = centered(detail, y + 2, width - margin * 2, paperSize === '58mm' ? 7 : 8) })
+  }
+
+  y += isA4 ? 5 : 4
+  rule(y)
+  y += isA4 ? 10 : 6
+  pdf.setTextColor(30, 52, 40)
+  pdf.setFont('helvetica', 'bold')
+  pdf.setFontSize(isA4 ? 13 : 9)
+  pdf.text(settings.gstEnabled ? 'TAX INVOICE' : 'SALES INVOICE', margin, y)
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(isA4 ? 10 : 8)
+  pdf.text(isA4 ? `Date: ${date}` : `# ${sale.invoiceNumber || ''}`, right, y, { align: 'right' })
+  y += isA4 ? 7 : 5
+  pdf.setTextColor(83, 96, 88)
+  if (!isA4) pdf.text(date, margin, y)
+  else y -= 2
+  if (sale.customerName) {
+    y += isA4 ? 6 : 5
+    pdf.text(`Customer: ${sale.customerName}`, margin, y)
+  }
+  if (sale.status === 'void') {
+    y += isA4 ? 6 : 5
+    pdf.setTextColor(170, 45, 45)
+    pdf.setFont('helvetica', 'bold')
+    pdf.text('VOID', right, y, { align: 'right' })
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(83, 96, 88)
+  }
+  y += isA4 ? 8 : 6
+  rule(y)
+  y += isA4 ? 8 : 6
+
+  if (isA4) {
+    const qtyX = 129
+    const rateX = 158
+    const amountX = right
+    pdf.setFillColor(241, 246, 242)
+    pdf.rect(margin, y - 5, width - margin * 2, 9, 'F')
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(54, 75, 62)
+    pdf.setFontSize(9)
+    pdf.text('ITEM', margin + 2, y)
+    pdf.text('QTY', qtyX, y, { align: 'right' })
+    pdf.text('RATE', rateX, y, { align: 'right' })
+    pdf.text('AMOUNT', amountX - 2, y, { align: 'right' })
+    y += 9
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(42, 52, 46)
+    items.forEach((item, index) => {
+      const nameLines = pdf.splitTextToSize(String(item.name || 'Item'), qtyX - margin - 10)
+      const rowHeight = Math.max(8, nameLines.length * 4.5 + 2)
+      if (index % 2 === 1) {
+        pdf.setFillColor(250, 251, 250)
+        pdf.rect(margin, y - 5, width - margin * 2, rowHeight, 'F')
+      }
+      pdf.setFontSize(9)
+      pdf.text(nameLines, margin + 2, y)
+      pdf.setFontSize(8)
+      pdf.setTextColor(83, 96, 88)
+      pdf.text(String(item.quantity ?? 0), qtyX, y, { align: 'right' })
+      pdf.text(currency(item.unitPrice), rateX, y, { align: 'right' })
+      pdf.setTextColor(42, 52, 46)
+      pdf.text(currency(item.lineTotal ?? Number(item.quantity || 0) * Number(item.unitPrice || 0)), amountX - 2, y, { align: 'right' })
+      y += rowHeight
+    })
+  } else {
+    const amountX = right
+    pdf.setFont('helvetica', 'bold')
+    pdf.setFontSize(paperSize === '58mm' ? 7 : 8)
+    pdf.setTextColor(83, 96, 88)
+    pdf.text('ITEM', margin, y)
+    pdf.text('AMOUNT', amountX, y, { align: 'right' })
+    y += 5
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(42, 52, 46)
+    items.forEach((item) => {
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(paperSize === '58mm' ? 8 : 9)
+      const nameLines = pdf.splitTextToSize(String(item.name || 'Item'), width - margin * 2)
+      pdf.text(nameLines, margin, y)
+      y += nameLines.length * 4
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(paperSize === '58mm' ? 7 : 8)
+      pdf.setTextColor(83, 96, 88)
+      pdf.text(`${item.quantity ?? 0} x ${currency(item.unitPrice)}`, margin, y)
+      pdf.setTextColor(42, 52, 46)
+      pdf.text(currency(item.lineTotal ?? Number(item.quantity || 0) * Number(item.unitPrice || 0)), amountX, y, { align: 'right' })
+      y += 6
+    })
+  }
+
+  y += isA4 ? 4 : 2
+  rule(y)
+  y += isA4 ? 9 : 7
+  const summaryX = isA4 ? width - 78 : margin
+  const summaryRight = right
+  const summaryRow = (label, value, options = {}) => {
+    pdf.setFont('helvetica', options.bold ? 'bold' : 'normal')
+    pdf.setFontSize(options.size || (isA4 ? 10 : paperSize === '58mm' ? 7 : 8))
+    pdf.setTextColor(options.bold ? 30 : 83, options.bold ? 52 : 96, options.bold ? 40 : 88)
+    pdf.text(label, summaryX, y)
+    pdf.text(value, summaryRight, y, { align: 'right' })
+    y += options.spacing || (isA4 ? 6 : 5)
+  }
+  summaryRow('Subtotal', currency(sale.subtotal))
+  if (Number(sale.discount || 0) > 0) summaryRow('Discount', `-${currency(sale.discount)}`)
+  if (Number(sale.tax || 0) > 0) summaryRow('Tax', currency(sale.tax))
+  y += 1
+  rule(y)
+  y += isA4 ? 9 : 7
+  summaryRow('TOTAL', currency(sale.total), { bold: true, size: isA4 ? 15 : paperSize === '58mm' ? 10 : 12, spacing: isA4 ? 9 : 8 })
+  y += 1
+  rule(y)
+  y += isA4 ? 9 : 7
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(isA4 ? 9 : 8)
+  pdf.setTextColor(83, 96, 88)
+  pdf.text(`Payment: ${sale.paymentMethod || '—'}`, margin, y)
+  y += isA4 ? 6 : 5
+  pdf.text(`Received: ${currency(sale.amountReceived)}`, margin, y)
+  y += isA4 ? 6 : 5
+  pdf.text(`Change: ${currency(sale.change)}`, margin, y)
+  y += isA4 ? 14 : 11
+  rule(y)
+  y += isA4 ? 10 : 8
+  pdf.setTextColor(36, 95, 73)
+  pdf.setFont('helvetica', 'bold')
+  const footer = String(settings.invoiceFooter || '').trim() || 'Thank you for shopping!'
+  y = centered(footer, y, width - margin * 2, isA4 ? 11 : paperSize === '58mm' ? 8 : 9)
+
+  if (!isA4 && !receiptHeight) return createInvoicePdf(sale, settings, y + 11)
+  return pdf
+}
+
 function BillHistoryPage() {
   const { records: sales, loading, error, setError } = useRecords('sales', 250)
   const [shopSettings,setShopSettings]=useState({})
@@ -718,46 +970,11 @@ function BillHistoryPage() {
   const [busyId, setBusyId] = useState('')
   const visible = sales.filter((sale)=>`${sale.invoiceNumber} ${sale.customerName||''} ${sale.paymentMethod||''}`.toLowerCase().includes(search.toLowerCase()))
   async function download(sale) {
-    const { jsPDF } = await import('jspdf')
-    const format = shopSettings.invoicePaperSize === 'A4' ? 'a4' : [shopSettings.invoicePaperSize === '58mm' ? 58 : 80, Math.max(130, 100 + (sale.items||[]).length * 11)]
-    const pdf = new jsPDF({ unit:'mm', format })
-    const pageWidth = shopSettings.invoicePaperSize === 'A4' ? 210 : shopSettings.invoicePaperSize === '58mm' ? 58 : 80
-    const left = shopSettings.invoicePaperSize === 'A4' ? 18 : 5
-    const right = pageWidth - left
-    const center = pageWidth / 2
-    let y = 10
-    pdf.setFontSize(13);pdf.text(shopSettings.shopName||'Grocery Store',center,y,{align:'center'});y+=7
-    pdf.setFontSize(8)
-    if(shopSettings.address){pdf.text(String(shopSettings.address).slice(0,80),center,y,{align:'center'});y+=4}
-    if(shopSettings.phone){pdf.text(`Phone: ${shopSettings.phone}`,center,y,{align:'center'});y+=4}
-    if(shopSettings.gstin){pdf.text(`GSTIN: ${shopSettings.gstin}`,center,y,{align:'center'});y+=4}
-    pdf.text(`Invoice: ${sale.invoiceNumber}`,left,y);y+=5
-    pdf.text(timestampDate(sale.createdAt)?.toLocaleString('en-IN')||'',left,y);y+=7
-    pdf.line(left,y,right,y);y+=6
-    ;(sale.items||[]).forEach((item)=>{pdf.text(String(item.name||'').slice(0,40),left,y);y+=4;pdf.text(`${item.quantity} x ${money(item.unitPrice)} = ${money(item.lineTotal||item.quantity*item.unitPrice)}`,left,y);y+=6})
-    pdf.line(left,y,right,y);y+=6
-    pdf.text(`Subtotal: ${money(sale.subtotal)}`,left,y);y+=5
-    pdf.text(`Discount: ${money(sale.discount)}`,left,y);y+=5
-    pdf.text(`Tax: ${money(sale.tax)}`,left,y);y+=5
-    pdf.setFontSize(12);pdf.text(`TOTAL: ${money(sale.total)}`,left,y);y+=7
-    pdf.setFontSize(9);pdf.text(`Payment: ${sale.paymentMethod}`,left,y);y+=5
-    pdf.text(`Received: ${money(sale.amountReceived)}`,left,y);y+=5
-    pdf.text(`Change: ${money(sale.change)}`,left,y);y+=6
-    pdf.text(shopSettings.invoiceFooter||'Thank you for shopping!',center,y,{align:'center'})
+    const pdf = await createInvoicePdf(sale, shopSettings)
     pdf.save(`${sale.invoiceNumber}.pdf`)
   }
   async function printSale(sale) {
-    const { jsPDF } = await import('jspdf')
-    const format = shopSettings.invoicePaperSize === 'A4' ? 'a4' : [shopSettings.invoicePaperSize === '58mm' ? 58 : 80, Math.max(130, 100 + (sale.items||[]).length * 11)]
-    const pdf = new jsPDF({unit:'mm',format})
-    const width = shopSettings.invoicePaperSize === 'A4' ? 210 : shopSettings.invoicePaperSize === '58mm' ? 58 : 80
-    const left = shopSettings.invoicePaperSize === 'A4' ? 18 : 5
-    let y=10
-    pdf.setFontSize(13);pdf.text(shopSettings.shopName||'Grocery Store',width/2,y,{align:'center'});y+=8
-    pdf.setFontSize(9);pdf.text(`Invoice ${sale.invoiceNumber}`,left,y);y+=6
-    pdf.text(timestampDate(sale.createdAt)?.toLocaleString('en-IN')||'',left,y);y+=6
-    ;(sale.items||[]).forEach((item)=>{pdf.text(String(item.name||'').slice(0,34),left,y);y+=4;pdf.text(`${item.quantity} x ${money(item.unitPrice)} = ${money(item.lineTotal||item.quantity*item.unitPrice)}`,left,y);y+=6})
-    y+=2;pdf.text(`Subtotal: ${money(sale.subtotal)}`,left,y);y+=5;pdf.text(`Discount: ${money(sale.discount)}`,left,y);y+=5;pdf.text(`Tax: ${money(sale.tax)}`,left,y);y+=5;pdf.setFontSize(12);pdf.text(`TOTAL: ${money(sale.total)}`,left,y);y+=7;pdf.setFontSize(9);pdf.text(`Paid by ${sale.paymentMethod}`,left,y);y+=6;pdf.text(shopSettings.invoiceFooter||'Thank you for shopping!',width/2,y,{align:'center'})
+    const pdf = await createInvoicePdf(sale, shopSettings)
     pdf.autoPrint()
     window.open(pdf.output('bloburl'),'_blank','noopener')
   }
